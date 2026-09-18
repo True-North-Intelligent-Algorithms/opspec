@@ -15,21 +15,21 @@ opspec never imports numpy, but it can *describe* numpy
 (`ImageOf[np.ndarray]`). Code that computes on arrays (loops, tilers,
 codecs) belongs in a runner, not here.
 
-A test enforces this: importing opspec must not load numpy.
+To be enforced by a test: importing opspec must not load numpy.
 
 ## Layout
 
     src/opspec/      core, standard library only
-    examples/        walkthrough notebook (jupytext .py), uses numpy
+    examples/        small numbered notebooks, one idea each; uses numpy
     tests/           core tests without numpy; example tests skip if numpy is missing
     docs/design/     one short note per decision, written before the code
 
 ## How we work
 
 - Slow and small. One idea per step, one step per commit.
-- A short design note comes before each new module.
+- A short design note in docs/design/ comes before each new idea.
 - Every declaration is optional. Leaving one out means behaviour stays as it is today.
-- The walkthrough notebook grows with each step and always runs.
+- Each step gets its own small notebook, one idea each, and they all run.
 
 ## Commits
 
