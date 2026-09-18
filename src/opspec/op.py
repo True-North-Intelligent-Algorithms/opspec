@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
@@ -81,6 +81,22 @@ def is_op(obj: Any) -> bool:
     return callable(obj) and isinstance(getattr(obj, "__opspec__", None), _OpConfig)
 
 
+def ui_hints_of(annotation: Any) -> dict:
+    """Collect dict metadata off an annotation: widget hints for a host::
+
+        sigma: Annotated[float, {"min": 0.1, "max": 10.0}] = 2.0
+
+    Several dicts merge, left to right. opspec does not interpret the keys;
+    a host reads the ones it knows.
+    """
+    hints: dict = {}
+    if get_origin(annotation) is Annotated:
+        for meta in get_args(annotation)[1:]:
+            if isinstance(meta, dict):
+                hints.update(meta)
+    return hints
+
+
 def _strip(annotation: Any) -> Any:
     """The underlying type of a possibly-``Annotated`` annotation."""
     if get_origin(annotation) is Annotated:
@@ -96,6 +112,7 @@ class ParamSpec:
     type: Any
     default: Any
     role: Role | None = None
+    ui: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -138,6 +155,7 @@ class OpSpec:
                     type=_strip(annotation),
                     default=param.default,
                     role=role_of(annotation),
+                    ui=ui_hints_of(annotation),
                 )
             )
 
