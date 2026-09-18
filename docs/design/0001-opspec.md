@@ -60,10 +60,10 @@ says it works on one volume at a time, so a caller holding a 4D stack
 knows to loop rather then passing the entire array.  `Axes("z?", "y", "x", "t")`
 indicates the op can handle a time series of frames, and optionally volumes (? indicates z is optional) 
 
-**`WorkingSet`** — peak memory use of the op expressed as a multiple of
-image size, `WorkingSet(scale=8, dtype=np.float32)`
+**`PeakMemory`** — peak memory use of the op expressed as a multiple of
+image size, `PeakMemory(scale=8, dtype=np.float32)`
 
-An example with env, role, array type, axes, and working set (memory use)
+An example with env, role, array type, axes, and peak memory (memory use)
 all added.
 
 ```python
@@ -72,7 +72,7 @@ def richardson_lucy(
     input1: Annotated[
         ImageOf[cp.ndarray],
         Axes("z", "y", "x"),
-        WorkingSet(scale=8, dtype=np.float32),
+        PeakMemory(scale=8, dtype=np.float32),
     ],
     psf: ImageOf[cp.ndarray],
     num_iters: int = 10,

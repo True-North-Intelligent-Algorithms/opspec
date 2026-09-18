@@ -9,7 +9,7 @@ A runner is what actually calls ops.
 - (Optionally) **Provides the environment** the op asked for with `env=`.
 - (Optionally) **Slices** — the op declared `Axes("z", "y", "x")` and the
   caller has ZYXT, so the runner loops over T and gathers the results.
-- (Optionally) **Chunks** — the op declared a `WorkingSet`, so the runner
+- (Optionally) **Chunks** — the op declared a `PeakMemory`, so the runner
   divides the input into tiles that fit the memory it has.
 - **Calls the op** with the caller's arguments.
 - **Returns the result**, or an error.
