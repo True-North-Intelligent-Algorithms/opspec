@@ -16,7 +16,7 @@ signature: its name, its parameters and annotations with their types,
 roles and defaults, its return.
 
 ```python
-a = OpSpec.from_function(threshold)
+a = OpSpec.from_op(threshold)
 type(a)        # <class 'opspec.OpSpec'>
 a.params[0]    # ParamSpec(name='input1', type=np.ndarray, role=Role.image, ...)
 a.env          # 'cupy'
