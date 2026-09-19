@@ -47,6 +47,166 @@ def role_of(annotation: Any) -> Role | None:
     return None
 
 
+#: Axis names a viewer can map onto display semantics. Privileged, not
+#: exclusive: any string is a valid axis label.
+CANONICAL = ("x", "y", "z", "c", "t")
+
+#: Synonyms, resolved by lookup rather than guessed: ``row`` *is* ``y``.
+#: From scikit-image, ImageJ, Bio-Formats, CZI and OME-NGFF. Labels with
+#: no canonical equivalent (``lifetime``, ``batch``) pass through.
+ALIASES = {
+    "col": "x",
+    "cols": "x",
+    "column": "x",
+    "columns": "x",
+    "row": "y",
+    "rows": "y",
+    "pln": "z",
+    "plane": "z",
+    "planes": "z",
+    "slice": "z",
+    "slices": "z",
+    "ch": "c",
+    "chan": "c",
+    "channel": "c",
+    "channels": "c",
+    "frame": "t",
+    "frames": "t",
+    "time": "t",
+    "timepoint": "t",
+    "timepoints": "t",
+}
+
+
+def canonical(label: str) -> str:
+    """One axis label, case ignored and resolved: ``ROW`` -> ``y``.
+
+    Unrecognized labels pass through lowercased, so ``"lifetime"`` survives.
+    """
+    folded = label.strip().casefold()
+    return ALIASES.get(folded, folded)
+
+
+WILDCARD = "*"
+
+
+@dataclass(frozen=True)
+class Slot:
+    """One axis an op consumes. ``name`` is a hint, not a requirement.
+
+    ``name`` None is a wildcard: no preference at all.
+    """
+
+    name: str | None
+    optional: bool = False
+
+    def __str__(self) -> str:
+        return (self.name or WILDCARD) + ("?" if self.optional else "")
+
+
+@dataclass(frozen=True, init=False)
+class Axes:
+    """How many axes an op consumes, and what it likes to call them::
+
+        Axes("y", "x")        # two axes, named y and x
+        Axes(list("zyx"))     # three
+        Axes("y", "x", "c?")  # two, plus a channel axis if there is one
+        Axes("*", "*")        # two axes, no opinion which
+        Axes(variadic=True)   # any number
+
+    - Names are hints. A mismatch is reported in the plan, never refused.
+    - Arity binds: how many axes the op consumes is what its indexing needs.
+    - ``variadic`` means the op handles extra axes itself, so they need
+      not be looped over.
+    - Inert at runtime. Calling the op directly ignores all of this.
+    """
+
+    slots: tuple[Slot, ...]
+    variadic: bool
+
+    def __init__(self, *names: Any, variadic: bool = False) -> None:
+        # Note: frozen blocks ordinary assignment, so a hand-written __init__
+        # has to set fields the way dataclass itself does. Storing the parsed
+        # slots rather than the raw text is what makes Axes("z", "y", "x") and
+        # Axes("pln", "row", "col") compare equal, as they should.
+        if len(names) == 1 and not isinstance(names[0], str):
+            # A lone non-string is the sequence itself: Axes(list("zyx")).
+            names = tuple(names[0])
+        object.__setattr__(self, "slots", _parse_slots(names))
+        object.__setattr__(self, "variadic", variadic)
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """Each slot's preferred name, with ``"*"`` standing in for a wildcard."""
+        return tuple(str(slot).removesuffix("?") for slot in self.slots)
+
+    @property
+    def optional(self) -> frozenset[str]:
+        """Names of the slots that need not be filled."""
+        return frozenset(
+            slot.name for slot in self.slots if slot.optional and slot.name
+        )
+
+    @property
+    def core(self) -> tuple[str, ...]:
+        """Preferred names of the slots that must be filled."""
+        return tuple(str(slot) for slot in self.slots if not slot.optional)
+
+    def __repr__(self) -> str:
+        shown = ", ".join(repr(str(slot)) for slot in self.slots)
+        if self.variadic:
+            shown = f"{shown}, variadic=True" if shown else "variadic=True"
+        return f"Axes({shown})"
+
+
+def _parse_slots(names: tuple[Any, ...]) -> tuple[Slot, ...]:
+    """Validate slot spellings, resolving names and splitting off the '?'."""
+    slots: list[Slot] = []
+    seen: set[str] = set()
+    for label in names:
+        if label == "?":
+            raise ValueError(
+                "A lone '?' is not an axis. Mark the axis it belongs to, as 'c?'."
+            )
+        if not isinstance(label, str) or not label.strip("?"):
+            raise ValueError(f"Axis label {label!r} is not a non-empty string")
+        if any(char.isspace() or char == "," for char in label.strip()):
+            raise ValueError(
+                f"Axis label {label!r} has a separator in it; pass one label "
+                "per argument, as Axes('z', 'y', 'x')."
+            )
+        optional = label.endswith("?")
+        text = label.removesuffix("?")
+        if text == WILDCARD:
+            if optional:
+                # A wildcard has no name, and an optional slot is filled only
+                # by a name match, so '*?' could never be filled by anything.
+                raise ValueError(
+                    "'*?' is not a usable slot: a wildcard has no name to match "
+                    "on, and an optional slot is filled only by name. Use '*' "
+                    "for an axis the op always takes, or variadic=True for a "
+                    "tail of axes it may or may not be given."
+                )
+            # Wildcards are exempt from the repeat check: Axes('*', '*') is
+            # two axes the op has no opinion about, which is the whole point.
+            slots.append(Slot(None, False))
+            continue
+        name = canonical(text)
+        if name in seen:
+            raise ValueError(f"Repeated axis {name!r} in {names}")
+        seen.add(name)
+        slots.append(Slot(name, optional))
+    return tuple(slots)
+
+
+def axes_of(annotation: Any) -> Axes | None:
+    if get_origin(annotation) is Annotated:
+        for meta in get_args(annotation)[1:]:
+            if isinstance(meta, Axes):
+                return meta
+    return None
+
+
 @dataclass(frozen=True)
 class _OpConfig:
     env: str | None
@@ -112,6 +272,7 @@ class ParamSpec:
     type: Any
     default: Any
     role: Role | None = None
+    axes: Axes | None = None
     ui: dict = field(default_factory=dict)
 
 
@@ -155,6 +316,7 @@ class OpSpec:
                     type=_strip(annotation),
                     default=param.default,
                     role=role_of(annotation),
+                    axes=axes_of(annotation),
                     ui=ui_hints_of(annotation),
                 )
             )
