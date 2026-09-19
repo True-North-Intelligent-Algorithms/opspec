@@ -63,6 +63,24 @@ indicates the op can handle a time series of frames, and optionally volumes (? i
 **`PeakMemory`** — peak memory use of the op expressed as a multiple of
 image size, `PeakMemory(scale=8, dtype=np.float32)`
 
+**`Array`** — what counts as an array when an op does not want to name a
+library: `shape`, `dtype`, `ndim`, `size`, `__getitem__`. An op writes
+`ImageOf[Array]` when it can work on anything array-shaped, and
+`ImageOf[np.ndarray]` when it cannot.
+
+Three notes on it:
+
+- It is ours because nothing shippable exists. `array-api-typing` is still
+  a placeholder and `optype` needs Python 3.12, above our floor. The five
+  members are a subset of the Python array API standard, which is also
+  where napari's `LayerDataProtocol` takes its subset from.
+- No `__array__`, deliberately. cupy defines it and raises, so testing for
+  it passes and then fails. Converting between array libraries is the
+  runner's job, and `__dlpack__` is the better route for it.
+- `Array` is what a plugin can receive, not what a host must store. A host
+  keeps its own protocol — napari has `LayerDataProtocol` — and prepares
+  data to meet what the op declared. Usually that costs nothing.
+
 An example with env, role, array type, axes, and peak memory (memory use)
 all added.
 
