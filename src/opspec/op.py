@@ -7,10 +7,19 @@ environment, so it must depend on nothing heavier.
 from __future__ import annotations
 
 import inspect
+import types as _types
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Annotated, Any, get_args, get_origin, get_type_hints
+from pathlib import PurePath
+from typing import (
+    Annotated,
+    Any,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 
 class Role(Enum):
@@ -264,6 +273,165 @@ def _strip(annotation: Any) -> Any:
     return annotation
 
 
+# -- the wire vocabulary ------------------------------------------------
+#
+# Out of process, a type cannot be a Python object: a Java front end has no
+# way to receive ``<class 'numpy.ndarray'>``, only a name for it. These are
+# the names -- the set a generated dialog can render, plus UNKNOWN.
+
+INT = "int"
+FLOAT = "float"
+STR = "str"
+BOOL = "bool"
+NDARRAY = "ndarray"
+PATH = "path"
+ENUM = "enum"
+UNKNOWN = "unknown"
+
+WIRE_TYPES = (INT, FLOAT, STR, BOOL, NDARRAY, PATH, ENUM, UNKNOWN)
+
+
+@dataclass(frozen=True)
+class Choice:
+    """One member of an enum parameter: what to show, what to send."""
+
+    name: str
+    value: Any
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "value": self.value}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Choice:
+        return cls(name=data["name"], value=data["value"])
+
+
+@dataclass(frozen=True)
+class TypeSpec:
+    """A type in the vocabulary a front end can act on.
+
+    ``UNKNOWN`` is not a failure: a front end that cannot render one
+    parameter leaves it at its default and says why, using ``detail``.
+    """
+
+    name: str
+    choices: tuple[Choice, ...] = ()
+    nullable: bool = False
+    detail: str | None = None
+
+    def to_dict(self) -> dict:
+        data: dict = {"name": self.name}
+        if self.choices:
+            data["choices"] = [c.to_dict() for c in self.choices]
+        if self.nullable:
+            data["nullable"] = True
+        if self.detail is not None:
+            data["detail"] = self.detail
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> TypeSpec:
+        return cls(
+            name=data["name"],
+            choices=tuple(Choice.from_dict(c) for c in data.get("choices", ())),
+            nullable=bool(data.get("nullable", False)),
+            detail=data.get("detail"),
+        )
+
+
+def _is_ndarray(annotation: Any) -> bool:
+    """Recognize ``numpy.ndarray`` without importing numpy."""
+    return (
+        isinstance(annotation, type)
+        and annotation.__name__ == "ndarray"
+        and annotation.__module__.split(".")[0] == "numpy"
+    )
+
+
+def _spelling(annotation: Any) -> str:
+    """How an annotation is best named in a message to a human."""
+    if isinstance(annotation, type):
+        return annotation.__name__
+    return str(annotation)
+
+
+def _is_union(origin: Any) -> bool:
+    """Whether an origin is a union, spelled either way."""
+    if origin is Union:
+        return True
+    union_type = getattr(_types, "UnionType", None)  # 3.10+: X | Y
+    return union_type is not None and origin is union_type
+
+
+def type_spec(annotation: Any) -> TypeSpec:
+    """Classify a type annotation into the wire vocabulary."""
+    if isinstance(annotation, TypeSpec):
+        # Already classified: came off the wire, not off a live function.
+        return annotation
+    annotation = _strip(annotation)
+
+    origin = get_origin(annotation)
+    if origin is not None and _is_union(origin):
+        args = [a for a in get_args(annotation) if a is not type(None)]
+        if len(args) == 1:
+            inner = type_spec(args[0])  # Optional[X] is X, and may be empty
+            return TypeSpec(inner.name, inner.choices, True, inner.detail)
+        return TypeSpec(UNKNOWN, detail=_spelling(annotation))
+
+    if annotation in (None, type(None), inspect.Parameter.empty):
+        return TypeSpec(UNKNOWN, detail="unannotated")
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return TypeSpec(
+            ENUM,
+            choices=tuple(Choice(m.name, m.value) for m in annotation),
+            detail=annotation.__name__,
+        )
+    # bool before int: bool subclasses int, and a checkbox is not a number.
+    if annotation is bool:
+        return TypeSpec(BOOL)
+    if annotation is int:
+        return TypeSpec(INT)
+    if annotation is float:
+        return TypeSpec(FLOAT)
+    if annotation is str:
+        return TypeSpec(STR)
+    if isinstance(annotation, type) and issubclass(annotation, PurePath):
+        return TypeSpec(PATH)
+    if _is_ndarray(annotation):
+        return TypeSpec(NDARRAY)
+    return TypeSpec(UNKNOWN, detail=_spelling(annotation))
+
+
+def _wire_default(value: Any) -> Any:
+    """A default value in a form JSON can carry."""
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, PurePath):
+        return str(value)
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_wire_default(item) for item in value]
+    return None
+
+
+def _axes_dict(axes: Axes) -> dict:
+    return {
+        "slots": [{"name": s.name, "optional": s.optional} for s in axes.slots],
+        "variadic": axes.variadic,
+    }
+
+
+def _axes_from_dict(data: dict) -> Axes:
+    result = Axes(variadic=bool(data.get("variadic", False)))
+    slots = tuple(
+        Slot(s.get("name"), bool(s.get("optional", False)))
+        for s in data.get("slots", ())
+    )
+    object.__setattr__(result, "slots", slots)
+    return result
+
+
 @dataclass(frozen=True)
 class ParamSpec:
     """One parameter of an op, as declared."""
@@ -274,6 +442,70 @@ class ParamSpec:
     role: Role | None = None
     axes: Axes | None = None
     ui: dict = field(default_factory=dict)
+
+    @property
+    def required(self) -> bool:
+        return self.default is inspect.Parameter.empty
+
+    def to_dict(self) -> dict:
+        data: dict = {
+            "name": self.name,
+            "type": type_spec(self.type).to_dict(),
+            "required": self.required,
+        }
+        if not self.required:
+            data["default"] = _wire_default(self.default)
+        if self.role is not None:
+            data["role"] = self.role.value
+        if self.axes is not None:
+            data["axes"] = _axes_dict(self.axes)
+        if self.ui:
+            data["ui"] = dict(self.ui)
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> ParamSpec:
+        """Rebuild from the wire form.
+
+        ``type`` comes back as a ``TypeSpec``, not the live Python type: that
+        type does not exist in the process doing the reading, which is the
+        whole reason for the wire vocabulary.
+        """
+        return cls(
+            name=data["name"],
+            type=TypeSpec.from_dict(data["type"]),
+            default=(
+                inspect.Parameter.empty
+                if data.get("required", False)
+                else data.get("default")
+            ),
+            role=Role(data["role"]) if data.get("role") else None,
+            axes=_axes_from_dict(data["axes"]) if data.get("axes") else None,
+            ui=dict(data.get("ui", {})),
+        )
+
+
+@dataclass(frozen=True)
+class OutputSpec:
+    """One of an op's outputs, as a front end needs to see it."""
+
+    name: str
+    type: Any
+    role: Role | None = None
+
+    def to_dict(self) -> dict:
+        data: dict = {"name": self.name, "type": type_spec(self.type).to_dict()}
+        if self.role is not None:
+            data["role"] = self.role.value
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> OutputSpec:
+        return cls(
+            name=data["name"],
+            type=TypeSpec.from_dict(data["type"]),
+            role=Role(data["role"]) if data.get("role") else None,
+        )
 
 
 @dataclass(frozen=True)
@@ -292,6 +524,58 @@ class OpSpec:
     return_type: Any
     return_role: Role | None
     doc: str | None
+
+    #: Set only when rebuilt from the wire, where the return type is a name
+    #: rather than the live type the property below derives outputs from.
+    _outputs: tuple[OutputSpec, ...] | None = field(
+        default=None, repr=False, compare=False
+    )
+
+    @property
+    def outputs(self) -> tuple[OutputSpec, ...]:
+        """This op's outputs, named. A NamedTuple return is one each."""
+        if self._outputs is not None:
+            return self._outputs
+        if self.return_type in (None, type(None), inspect.Parameter.empty):
+            return ()
+        fields = getattr(self.return_type, "_fields", None)
+        if fields is None:
+            return (OutputSpec("result", self.return_type, self.return_role),)
+        try:
+            hints = get_type_hints(self.return_type, include_extras=True)
+        except Exception:  # a NamedTuple we cannot resolve still has names
+            hints = {}
+        return tuple(
+            OutputSpec(name, _strip(hints.get(name)), role_of(hints.get(name)))
+            for name in fields
+        )
+
+    def to_dict(self) -> dict:
+        """A JSON-safe form, for the trip to another process or language."""
+        return {
+            "name": self.name,
+            "module": self.module,
+            "function": self.function,
+            "env": self.env,
+            "params": [p.to_dict() for p in self.params],
+            "outputs": [o.to_dict() for o in self.outputs],
+            "doc": self.doc,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> OpSpec:
+        outputs = tuple(OutputSpec.from_dict(o) for o in data.get("outputs", ()))
+        return cls(
+            name=data["name"],
+            module=data["module"],
+            function=data["function"],
+            env=data.get("env"),
+            params=tuple(ParamSpec.from_dict(p) for p in data["params"]),
+            return_type=outputs[0].type if len(outputs) == 1 else None,
+            return_role=outputs[0].role if len(outputs) == 1 else None,
+            doc=data.get("doc"),
+            _outputs=outputs,
+        )
 
     @classmethod
     def from_op(cls, fn: Callable) -> OpSpec:
