@@ -25,3 +25,29 @@ runner.
 A Protocol. opspec says what methods a runner has; it ships no runner.
 The simplest one calls the function in this process. Others start a
 worker, a conda environment, or a machine with a GPU.
+
+## Two protocols
+
+- `Builder` provides environments. Slow, rare, needs progress.
+- `Runner` calls ops. One per call.
+
+Structural, so a class satisfies them by having the methods. scikit-ops'
+existing `Runner` satisfies both, unchanged and without importing opspec.
+An in-process runner implements `Runner` only.
+
+## Open
+
+Left open on purpose until something needs them.
+
+- Does `run` block, or return a task? scikit-ops blocks; napari#9347
+  returns a `PluginTask`.
+- Where an environment's recipe lives. npe2#498 puts dependencies in the
+  manifest, scikit-ops in a pixi.toml. opspec names an environment and
+  says nothing about its contents.
+- Whether `Builder` also lists environments and in-flight tasks, as
+  napari#9347 does.
+- How a runner keys an environment directory. Two versions of the same
+  runner writing one directory can leave it half-installed.
+- Converting array types. The op declares what it needs, the runner
+  converts. `__array__` is not a reliable test: cupy defines it and
+  raises.
