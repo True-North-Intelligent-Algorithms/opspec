@@ -543,8 +543,10 @@ class OpSpec:
             return (OutputSpec("result", self.return_type, self.return_role),)
         try:
             hints = get_type_hints(self.return_type, include_extras=True)
-        except Exception:  # a NamedTuple we cannot resolve still has names
-            hints = {}
+        except Exception:
+            # A file run as a script has no module to resolve names against.
+            # The raw annotations are the live objects, so they still serve.
+            hints = dict(getattr(self.return_type, "__annotations__", {}))
         return tuple(
             OutputSpec(name, _strip(hints.get(name)), role_of(hints.get(name)))
             for name in fields
@@ -606,9 +608,11 @@ class OpSpec:
             )
 
         returns = hints.get("return", signature.return_annotation)
+        # A function defined by exec has no module; name it for what it is.
+        module = fn.__module__ or "__script__"
         return cls(
-            name=f"{fn.__module__}:{fn.__name__}",
-            module=fn.__module__,
+            name=f"{module}:{fn.__name__}",
+            module=module,
             function=fn.__name__,
             env=config.env,
             params=tuple(params),
