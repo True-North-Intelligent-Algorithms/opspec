@@ -508,6 +508,31 @@ class OutputSpec:
         )
 
 
+def _outputs_of(
+    return_type: Any, return_role: Role | None, fn: Callable | None = None
+) -> tuple[OutputSpec, ...]:
+    """An op's outputs. A NamedTuple return is one output per field.
+
+    Annotations are resolved against *fn*'s globals, because a file run with
+    ``exec`` inherits the caller's ``from __future__ import annotations`` --
+    which turns every annotation in it into a string.
+    """
+    if return_type in (None, type(None), inspect.Parameter.empty):
+        return ()
+    fields = getattr(return_type, "_fields", None)
+    if fields is None:
+        return (OutputSpec("result", return_type, return_role),)
+    namespace = getattr(fn, "__globals__", None)
+    try:
+        hints = get_type_hints(return_type, globalns=namespace, include_extras=True)
+    except Exception:
+        hints = dict(getattr(return_type, "__annotations__", {}))
+    return tuple(
+        OutputSpec(name, _strip(hints.get(name)), role_of(hints.get(name)))
+        for name in fields
+    )
+
+
 @dataclass(frozen=True)
 class OpSpec:
     """A class to convert an op signature into data::
@@ -536,21 +561,7 @@ class OpSpec:
         """This op's outputs, named. A NamedTuple return is one each."""
         if self._outputs is not None:
             return self._outputs
-        if self.return_type in (None, type(None), inspect.Parameter.empty):
-            return ()
-        fields = getattr(self.return_type, "_fields", None)
-        if fields is None:
-            return (OutputSpec("result", self.return_type, self.return_role),)
-        try:
-            hints = get_type_hints(self.return_type, include_extras=True)
-        except Exception:
-            # A file run as a script has no module to resolve names against.
-            # The raw annotations are the live objects, so they still serve.
-            hints = dict(getattr(self.return_type, "__annotations__", {}))
-        return tuple(
-            OutputSpec(name, _strip(hints.get(name)), role_of(hints.get(name)))
-            for name in fields
-        )
+        return _outputs_of(self.return_type, self.return_role)
 
     def to_dict(self) -> dict:
         """A JSON-safe form, for the trip to another process or language."""
@@ -608,6 +619,7 @@ class OpSpec:
             )
 
         returns = hints.get("return", signature.return_annotation)
+        outputs = _outputs_of(_strip(returns), role_of(returns), fn)
         # A function defined by exec has no module; name it for what it is.
         module = fn.__module__ or "__script__"
         return cls(
@@ -619,4 +631,5 @@ class OpSpec:
             return_type=_strip(returns),
             return_role=role_of(returns),
             doc=inspect.getdoc(fn),
+            _outputs=outputs,
         )
