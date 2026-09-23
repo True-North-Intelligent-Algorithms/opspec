@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "example-runner"
+version = "0.1.0"
+description = "A runner for opspec ops, and a napari widget wired to it."
+requires-python = ">=3.10"
+dependencies = ["opspec", "magicgui", "napari"]
+
+[project.entry-points."napari.widget_generator"]
+example-runner = "example_runner.widget:build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/example_runner"]

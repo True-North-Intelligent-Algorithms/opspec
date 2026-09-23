@@ -1,0 +1,11 @@
+name: label-op
+display_name: Label objects
+contributions:
+  commands:
+    - id: label-op.label_objects
+      title: Label objects
+      python_name: label_op.ops:label_objects
+  widgets:
+    - command: label-op.label_objects
+      display_name: Label objects
+      autogenerate: example-runner
